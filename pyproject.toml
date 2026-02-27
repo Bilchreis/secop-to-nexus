@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
+
+
+
+[project]
+name = "secop-to-nexus"
+dynamic = ["version"]
+description = "transformer to convert secop data to nexus format"
+requires-python = ">= 3.11"
+
+dependencies = [
+    "numpy==2.1.3",
+    "nexuscreator@git+https://codebase.helmholtz.cloud/hzb/research_data_management/nexuscreator",
+    "frappy-core==0.20.4",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel",
+    "black",
+    "isort",
+    "nbstripout",
+    "pytest",
+    "mypy",
+    "pre-commit",
+]
+
+all = [
+    {include-group = "dev"},
+]
+
+
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-v"
+asyncio_mode="auto"
+filterwarnings = "ignore::PendingDeprecationWarning"

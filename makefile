@@ -1,0 +1,29 @@
+# tell makefile to use bash
+SHELL := /bin/bash
+
+venv:  .venv/touchfile
+
+.venv/touchfile: pyproject.toml
+	uv venv --python 3.11
+	uv sync --all-groups
+	touch .venv/touchfile
+
+test: venv
+	uv run pytest test/ -v
+
+
+clean:  ## 🧹 Clean up project
+	rm -rf .venv
+	rm -rf tests/node_modules
+	rm -rf tests/package*
+	rm -rf test-results.xml
+	rm -rf __pycache__
+	rm -rf .pytest_cache
+	rm -rf pids.txt
+	rm -rf *_log.txt
+	rm -rf *egg-info
+	rm -rf build
+	rm -rf dist
+
+pretty: venv
+	pre-commit run --all-files

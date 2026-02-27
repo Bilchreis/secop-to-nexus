@@ -1,0 +1,12 @@
+[flake8]
+ignore = E203, W503, F405, F403, W605
+exclude =
+    .git,
+    __pycache__,
+    build,
+    dist,
+    .venv,
+    Dockerfiles,
+    src/cfg_rock_it/*
+    src/frappy_rock_it/HZB/FTIR_gas_analyzer/FTIR_remote_control.py,
+max-line-length = 115
