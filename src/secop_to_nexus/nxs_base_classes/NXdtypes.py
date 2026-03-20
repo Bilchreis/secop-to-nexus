@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, TypeAlias
 
 import numpy as np
@@ -52,3 +53,11 @@ class NX_INT(NXdtype):
 
     def __call__(self) -> dict[str, Any]:
         return {"@dtype": f"NX_INT64{self.is_array()}", "@value": self.value}
+
+
+@dataclass
+class NX_DATE_TIME(NXdtype):
+    value: datetime
+
+    def __call__(self) -> dict[str, Any]:
+        return {"@dtype": "NX_DATE_TIME", "@value": self.value.isoformat()}

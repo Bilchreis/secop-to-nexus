@@ -21,6 +21,12 @@ class NXobject:
                 value._name = attr
                 value.parent = self
                 value.finalize()
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    if isinstance(item, NXobject):
+                        item._name = key
+                        item.parent = self
+                        item.finalize()
 
     def get_path(self) -> str:
         name = self._name or self.__class__.__name__.lower()
