@@ -61,3 +61,7 @@ class NX_DATE_TIME(NXdtype):
 
     def __call__(self) -> dict[str, Any]:
         return {"@dtype": "NX_DATE_TIME", "@value": self.value.isoformat()}
+
+
+# Generic numeric type — either integer or float
+NX_NUMBER: TypeAlias = NX_INT | NX_FLOAT
