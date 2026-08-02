@@ -1,13 +1,21 @@
-from secop_to_nexus.nxs_base_classes.NXobject import NXobject
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from secop_to_nexus.nxs_base_classes.NXobject import NXobject
 
 
+@dataclass
 class NXreference:
-    target: NXobject = None
-    path: str = ""
+    """Reference to another object in the same NeXus tree.
 
-    def _init__(self, target: NXobject):
-        self.target = target
-        self.path = target.get_path()
+    Resolved to the target's absolute HDF5 path at serialization time, so
+    ``finalize()`` must have been called on the tree root before serializing.
+    """
 
-    def __call__(self) -> str:
-        return self.path
+    target: NXobject
+
+    def resolve(self) -> str:
+        return self.target.get_path()

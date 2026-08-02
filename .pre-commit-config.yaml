@@ -1,4 +1,18 @@
+# Generated NeXus base classes (everything in nxs_base_classes/ except the
+# hand-written NXobject/NXdtypes/NXreference) are produced pre-formatted by
+# tools/generate_nx_classes.py; formatters and linters skip them (per-hook
+# exclude below) so they never fight the generator.
+
 repos:
+
+  - repo: local
+    hooks:
+      - id: nx-classes-drift
+        name: generated NeXus classes up to date
+        entry: uv run python tools/generate_nx_classes.py --check
+        language: system
+        pass_filenames: false
+        files: '^(src/secop_to_nexus/nxs_base_classes/|tools/generate_nx_classes\.py)'
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
@@ -15,16 +29,19 @@ repos:
     rev: 6.1.0
     hooks:
       - id: flake8
+        exclude: &generated '^src/secop_to_nexus/nxs_base_classes/(?!NXobject\.py$|NXdtypes\.py$|NXreference\.py$).+\.py$'
 
   - repo: https://github.com/PyCQA/isort
     rev: 6.0.1
     hooks:
       - id: isort
+        exclude: *generated
 
   - repo: https://github.com/psf/black
     rev: 25.1.0
     hooks:
       - id: black
+        exclude: *generated
 
   - repo: https://github.com/kynan/nbstripout
     rev: 0.5.0
