@@ -14,9 +14,12 @@ Layout (one SEC node per file)::
     /entry/sample                      NXsample  only if a meaning belongs to it
         <quantity>_env                 NXenvironment, links to the modules
         <quantity>_log                 link to the most important measuring log
-    /entry/<module>_<param>            NXdata per numeric log (links to its value
-                                       and time) for plotting; @default chain
-                                       root -> entry -> main sample quantity
+
+Each module with a numeric ``value`` gets one NXdata group ``data`` next to
+its logs: ``value`` and ``time`` are links into ``value_log``, nothing is
+copied or resampled. The ``@default``
+chain root -> entry -> instrument -> module -> data leads to the sample's main
+quantity, else to the first module that has a plot.
 
 Modules are classified by their interface classes; ``meaning.function``
 fills ``NXsensor/measurement`` and ``NXactuator/physical_quantity``.
@@ -66,15 +69,7 @@ log = logging.getLogger(__name__)
 
 PROGRAM_NAME = "secop-to-nexus"
 SAMPLE_PATH = "/entry/sample"
-# fixed NXentry children that a <module>_<param> NXdata name must not shadow
-_ENTRY_CHILDREN = {
-    "title",
-    "start_time",
-    "end_time",
-    "program_name",
-    "instrument",
-    "sample",
-}
+PLOT_NAME = "data"  # NXdata group inside each module
 
 # SECoP meaning functions whose NeXus spelling differs (NXsensor/measurement)
 _NEXUS_QUANTITY = {
@@ -205,25 +200,23 @@ def _parameter_logs(
     return {f"{pname}_log": nxlog(column(dt, values, datainfo), description)}
 
 
-def _plot(module: str, logname: str, nxlog: NXlog) -> NXdata | None:
-    """NXdata linking to a numeric log's value (signal) and time (axis), so
-    NeXus viewers can plot it; None for non-numeric logs."""
-    value = nxlog.value
-    if not isinstance(value, (NX_FLOAT, NX_INT)):
+def _plot(module: str, value_log: NXlog | None) -> NXdata | None:
+    """NXdata of a module: its value over time, as links into value_log;
+    None if the value is not numeric."""
+    if value_log is None or not isinstance(value_log.value, (NX_FLOAT, NX_INT)):
         return None
-    quantity = logname.removesuffix("_log")
-    signal = quantity if quantity != "time" else "value"
-    label = f"{module}:{quantity}"
-    # attributes on the log datasets; the soft links in NXdata share them
+    value, time = value_log.value, value_log.time
+    # attributes on the log datasets; the links in NXdata share them
+    label = f"{module}:value"
     value.attrs["long_name"] = f"{label} ({value.units})" if value.units else label
-    nxlog.time.attrs["long_name"] = "time since start_time (s)"
+    time.attrs["long_name"] = "time since start_time (s)"
     return NXdata(
-        signal=signal,
+        signal="value",
         axes="time" if np.ndim(value.value) == 1 else ["time", "."],
         AXISNAME_indices={"time_indices": 0},
-        DATA={signal: NXreference(nxlog, "value")},
-        AXISNAME={"time": NXreference(nxlog, "time")},
-        title=NX_CHAR(label),
+        DATA={"value": NXreference(value_log, "value")},
+        AXISNAME={"time": NXreference(value_log, "time")},
+        title=NX_CHAR(module),
     )
 
 
@@ -317,9 +310,7 @@ def build_nexus_tree(
     )
 
     sample_links: list[_SampleLink] = []
-    plots: dict[str, NXdata] = {}
-    plot_of_log: dict[int, str] = {}  # id(NXlog) -> name of its NXdata
-    value_plots: list[str] = []
+    plotted: list[str] = []  # modules that have an NXdata group
     for mname, module in modules.items():
         meaning = Meaning.parse(module.get("meaning"))
         group = _module_group(mname, module, meaning)
@@ -337,15 +328,6 @@ def build_nexus_tree(
                     group.value_log = nxlog
                 else:
                     group.extra_groups[logname] = nxlog
-                plot = _plot(mname, logname, nxlog)
-                if plot is not None:
-                    name = f"{mname}_{logname.removesuffix('_log')}"
-                    if name in _ENTRY_CHILDREN or name in plots:
-                        name += "_data"
-                    plots[name] = plot
-                    plot_of_log[id(nxlog)] = name
-                    if logname == "value_log":
-                        value_plots.append(name)
             # SECoP 2: a meaning may also sit on a single parameter
             p_meaning = Meaning.parse(accessible.get("meaning"))
             if p_meaning and p_meaning.belongs_to == "sample":
@@ -355,10 +337,15 @@ def build_nexus_tree(
                     )
                 )
 
+        value_log = getattr(group, "value_log", None) or group.extra_groups.get(
+            "value_log"
+        )
+        plot = _plot(mname, value_log)
+        if plot is not None:
+            group.extra_groups[PLOT_NAME] = plot
+            group.default = PLOT_NAME
+            plotted.append(mname)
         if meaning and meaning.belongs_to == "sample":
-            value_log = getattr(group, "value_log", None) or group.extra_groups.get(
-                "value_log"
-            )
             sample_links.append(_SampleLink(meaning, mname, group, value_log))
 
         if isinstance(group, NXactuator):
@@ -382,22 +369,23 @@ def build_nexus_tree(
         ),
         program_name=NX_CHAR(PROGRAM_NAME, attrs={"version": _version()}),
         instruments={"instrument": instrument},
-        data=plots,
     )
-    main_logs: list[NXlog] = []
+    main_modules: list[str] = []
     if sample_links:
         sample = _build_sample(sample_links, equipment_id, node_description)
         entry.samples["sample"] = sample
-        main_logs = [
-            ref.target
+        # modules whose value is the sample's <quantity>_log
+        main_modules = [
+            link.module
             for ref in sample.extra_groups.values()
-            if isinstance(ref, NXreference)
+            for link in sample_links
+            if isinstance(ref, NXreference) and link.log is ref.target
         ]
-    # default plot: the sample's main quantity, else the first module value
-    defaults = [plot_of_log[id(lg)] for lg in main_logs if id(lg) in plot_of_log]
-    defaults += value_plots + list(plots)
+    # default plot: the sample's main quantity, else the first plotted module
+    defaults = [m for m in main_modules if m in plotted] + plotted
     if defaults:
-        entry.default = defaults[0]
+        instrument.default = defaults[0]
+        entry.default = "instrument"
 
     root = NXroot(
         default="entry",

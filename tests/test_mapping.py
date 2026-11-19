@@ -256,48 +256,57 @@ def test_empty_logs(tmp_path, cryostat):
         assert "value_log" not in f[f"{INST}/T_reg"]
 
 
-def test_nxdata_per_numeric_log(nxs):
-    plots = sorted(
-        name
-        for name, g in nxs["entry"].items()
-        if isinstance(g, h5py.Group) and g.attrs.get("NX_class") == "NXdata"
+def _nxdata(f) -> list[str]:
+    found = []
+    f.visititems(
+        lambda name, g: (
+            found.append(name)
+            if isinstance(g, h5py.Group) and g.attrs.get("NX_class") == "NXdata"
+            else None
+        )
     )
-    # bools, strings and JSON-encoded values get no plot
-    assert plots == [
-        "T_reg_ramp",
-        "T_reg_status",
-        "T_reg_target",
-        "T_reg_value",
-        "T_sample_value",
-        "T_vti_value",
-        "field_value",
-        "spectrum_value",
+    return sorted(found)
+
+
+def test_one_nxdata_per_module_with_numeric_value(nxs):
+    # nothing at entry level; io has no value
+    assert _nxdata(nxs) == [
+        f"{INST}/{m}/data" for m in ("T_reg", "T_sample", "T_vti", "field", "spectrum")
     ]
 
 
-def test_nxdata_links_into_log(nxs):
-    plot = nxs["entry/T_reg_value"]
+def test_readable_plot_links_into_value_log(nxs):
+    plot = nxs[f"{INST}/T_sample/data"]
     assert plot.attrs["signal"] == "value"
+    assert "auxiliary_signals" not in plot.attrs
     assert plot.attrs["axes"] == "time"
     assert plot.attrs["time_indices"] == 0
-    assert _str(plot["title"]) == "T_reg:value"
-    assert plot.get("value", getlink=True).path == f"/{INST}/T_reg/value_log/value"
-    assert plot.get("time", getlink=True).path == f"/{INST}/T_reg/value_log/time"
-    np.testing.assert_allclose(plot["value"][()], [4.2, 4.3, 4.4])
-    assert plot["value"].attrs["long_name"] == "T_reg:value (K)"
+    assert _str(plot["title"]) == "T_sample"
+    assert plot.get("value", getlink=True).path == f"/{INST}/T_sample/value_log/value"
+    assert plot.get("time", getlink=True).path == f"/{INST}/T_sample/value_log/time"
+    assert plot["value"].attrs["long_name"] == "T_sample:value (K)"
     assert plot["time"].attrs["long_name"] == "time since start_time (s)"
-    assert plot["value"].attrs["units"] == "K"
+    assert nxs[f"{INST}/T_sample"].attrs["default"] == "data"
+
+
+def test_plot_has_only_the_value(nxs):
+    # T_reg has a target, but it has its own time axis: not part of the plot
+    plot = nxs[f"{INST}/T_reg/data"]
+    assert sorted(plot) == ["time", "title", "value"]
+    assert "auxiliary_signals" not in plot.attrs
+    np.testing.assert_allclose(plot["value"][()], [4.2, 4.3, 4.4])
 
 
 def test_nxdata_2d_array(nxs):
-    plot = nxs["entry/spectrum_value"]
+    plot = nxs[f"{INST}/spectrum/data"]
     assert list(plot.attrs["axes"]) == ["time", "."]
     assert plot["value"].shape == (2, 3)
 
 
 def test_default_plot_is_main_sample_quantity(nxs):
     assert nxs.attrs["default"] == "entry"
-    assert nxs["entry"].attrs["default"] == "T_sample_value"
+    assert nxs["entry"].attrs["default"] == "instrument"
+    assert nxs[INST].attrs["default"] == "T_sample"
 
 
 def test_default_plot_without_sample(tmp_path):
@@ -311,8 +320,8 @@ def test_default_plot_without_sample(tmp_path):
     path = tmp_path / "shall.nxs"
     write_nexus(path, describe, logs)
     with h5py.File(path, "r") as f:
-        # the module value wins over other parameters
-        assert f["entry"].attrs["default"] == "mass_spec_value"
+        assert f[INST].attrs["default"] == "mass_spec"
+        assert f[f"{INST}/mass_spec"].attrs["default"] == "data"
 
 
 def test_no_default_plot_without_numeric_logs(tmp_path, cryostat):
@@ -320,3 +329,4 @@ def test_no_default_plot_without_numeric_logs(tmp_path, cryostat):
     write_nexus(path, cryostat, {"io": {"_last_reply": ([T0], ["OK"])}})
     with h5py.File(path, "r") as f:
         assert "default" not in f["entry"].attrs
+        assert _nxdata(f) == []

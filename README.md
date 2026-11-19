@@ -39,19 +39,20 @@ One SEC node per file:
         <param>_log           NXlog         one per recorded parameter
         status_log            NXlog         status code (enum members in @secop_enum)
         status_text_log       NXlog         status message
+        data                  NXdata        plot of value over time
 /entry/sample                 NXsample      only if a module's meaning belongs to the sample
     <quantity>_env            NXenvironment links to the sensors/actuators
     <quantity>_log            link to the log of the most important measuring module
-/entry/<module>_<param>       NXdata        one per numeric log, for plotting
 ```
 
-Every float/int/enum log also gets an `NXdata` group in `/entry`. Its signal and
-`time` axis are soft links into the `NXlog`, so nothing is stored twice. Each
-parameter gets its own group because parameters are recorded at different times
-and cannot share a time axis. Arrays plot as 2D (`@axes = ["time", "."]`). The
-`@default` chain (root → `entry` → plot) picks the sample's main quantity, e.g.
-the highest-importance `temperature` module, and otherwise the first module's
-`value`, so viewers such as h5web or NeXpy open a useful plot directly.
+Every module with a numeric `value` gets one `NXdata` group `data` next to its
+logs. Its `value` signal and `time` axis are soft links into `value_log`, so
+nothing is stored twice. Other parameters, including `target`, are not
+plotted: they have their own timestamps and are never resampled. Array values plot as 2D (`@axes = ["time", "."]`). The
+`@default` chain (root → `entry` → `instrument` → module → `data`) picks the
+sample's main quantity, e.g. the highest-importance `temperature` module, and
+otherwise the first module with a plot, so viewers such as h5web or NeXpy open
+a useful plot directly.
 
 `meaning.function` fills `NXsensor/measurement` and
 `NXactuator/physical_quantity`, using the NeXus spelling (`magneticfield` becomes
