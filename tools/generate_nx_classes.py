@@ -101,7 +101,7 @@ def _doc_text(el: ET.Element | None) -> str:
     node = el.find(f"{NS}doc")
     if node is None or node.text is None:
         return ""
-    return textwrap.dedent(node.text).strip()
+    return textwrap.dedent(node.text.expandtabs(8)).strip()
 
 
 def _first_doc_line(el: ET.Element) -> str:

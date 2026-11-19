@@ -1,0 +1,413 @@
+"""Map a SECoP SEC node (describe message + recorded values) onto a NeXus tree.
+
+Layout (one SEC node per file)::
+
+    /                                  NXroot
+    /entry                             NXentry   title, start_time, end_time
+    /entry/instrument                  NXinstrument  name = equipment_id
+        secop_description              NXnote   raw describe message (JSON)
+        <module>                       NXsensor (Readable)
+                                       NXactuator (Writable, Drivable)
+                                       NXcollection (anything else)
+            value_log, target_log, <param>_log          NXlog per parameter
+            status_log, status_text_log                 NXlog (code, message)
+    /entry/sample                      NXsample  only if a meaning belongs to it
+        <quantity>_env                 NXenvironment, links to the modules
+        <quantity>_log                 link to the most important measuring log
+    /entry/<module>_<param>            NXdata per numeric log (links to its value
+                                       and time) for plotting; @default chain
+                                       root -> entry -> main sample quantity
+
+Modules are classified by their interface classes; ``meaning.function``
+fills ``NXsensor/measurement`` and ``NXactuator/physical_quantity``.
+A meaning belongs to the sample if ``belongs_to`` is ``"sample"``; old
+list-style meanings (``[function, importance]``, SECoP 1.x) predate
+``belongs_to`` and always referred to the sample.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any
+
+import h5py
+import numpy as np
+
+from secop_to_nexus.datainfo import column, is_status, parse_datainfo
+from secop_to_nexus.nxs_base_classes import (
+    NXDL_VERSION,
+    NXactuator,
+    NXcollection,
+    NXdata,
+    NXentry,
+    NXenvironment,
+    NXinstrument,
+    NXlog,
+    NXnote,
+    NXobject,
+    NXroot,
+    NXsample,
+    NXsensor,
+)
+from secop_to_nexus.nxs_base_classes.NXdtypes import (
+    NX_CHAR,
+    NX_DATE_TIME,
+    NX_FLOAT,
+    NX_INT,
+)
+from secop_to_nexus.nxs_base_classes.NXreference import NXreference
+
+log = logging.getLogger(__name__)
+
+PROGRAM_NAME = "secop-to-nexus"
+SAMPLE_PATH = "/entry/sample"
+# fixed NXentry children that a <module>_<param> NXdata name must not shadow
+_ENTRY_CHILDREN = {
+    "title",
+    "start_time",
+    "end_time",
+    "program_name",
+    "instrument",
+    "sample",
+}
+
+# SECoP meaning functions whose NeXus spelling differs (NXsensor/measurement)
+_NEXUS_QUANTITY = {
+    "magneticfield": "magnetic_field",
+    "electricfield": "electric_field",
+    "surfacepressure": "surface_pressure",
+    "ph": "pH",
+    "flowrate": "flow",
+}
+_ACTUATOR_CLASSES = {"Writable", "Drivable", "Acquisition"}
+_SENSOR_CLASSES = {"Readable", "AcquisitionChannel"}
+
+
+@dataclass
+class ParameterLog:
+    """Recorded history of one parameter.
+
+    ``timestamps`` are Unix seconds; ``values`` are SECoP wire values as
+    JSON-decoded from the data reports (``None`` entries, e.g. from error
+    reports, are dropped).
+    """
+
+    timestamps: Sequence[float] | np.ndarray
+    values: Sequence[Any] | np.ndarray
+
+
+# {module: {parameter: ParameterLog | (timestamps, values)}}
+Logs = Mapping[
+    str, Mapping[str, "ParameterLog | tuple[Sequence[float], Sequence[Any]]"]
+]
+
+
+@dataclass(frozen=True)
+class Meaning:
+    function: str
+    importance: float
+    belongs_to: str
+
+    @property
+    def regulation(self) -> bool:
+        return self.function.endswith("_regulation")
+
+    @property
+    def quantity(self) -> str:
+        base = self.function.removesuffix("_regulation")
+        return _NEXUS_QUANTITY.get(base, base)
+
+    @classmethod
+    def parse(cls, raw: Any) -> Meaning | None:
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            return cls(str(raw[0]), float(raw[1]), "sample")
+        if isinstance(raw, Mapping) and raw.get("function"):
+            return cls(
+                str(raw["function"]),
+                float(raw.get("importance", 0)),
+                str(raw.get("belongs_to", "other")),
+            )
+        return None
+
+
+@dataclass
+class _SampleLink:
+    meaning: Meaning
+    module: str
+    group: NXobject
+    log: NXlog | None
+
+
+def _load_describe(describe: Mapping[str, Any] | str | bytes) -> dict[str, Any]:
+    if isinstance(describe, (bytes, bytearray)):
+        describe = describe.decode("utf-8")
+    if isinstance(describe, str):
+        return json.loads(describe)
+    return dict(describe)
+
+
+def _normalize(plog: Any) -> tuple[np.ndarray, list[Any]]:
+    if not isinstance(plog, ParameterLog):
+        plog = ParameterLog(*plog)
+    ts = np.asarray(plog.timestamps, dtype=np.float64)
+    values = list(plog.values)
+    if len(ts) != len(values):
+        raise ValueError(f"{len(ts)} timestamps but {len(values)} values")
+    keep = [i for i, v in enumerate(values) if v is not None]
+    if len(keep) != len(values):
+        ts, values = ts[keep], [values[i] for i in keep]
+    if len(ts) > 1 and np.any(np.diff(ts) < 0):
+        order = np.argsort(ts, kind="stable")
+        ts, values = ts[order], [values[i] for i in order]
+    return ts, values
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _parameter_logs(
+    pname: str,
+    accessible: Mapping[str, Any],
+    ts: np.ndarray,
+    values: list[Any],
+    t0: float,
+) -> dict[str, NXlog]:
+    """NXlog group(s) for one parameter, keyed by HDF5 group name."""
+    datainfo = accessible["datainfo"]
+    dt = parse_datainfo(datainfo, pname)
+    description = accessible.get("description")
+
+    def nxlog(value_column: Any, desc: str | None) -> NXlog:
+        return NXlog(
+            time=NX_FLOAT(ts - t0, units="s", attrs={"start": _iso(t0)}, array=True),
+            value=value_column,
+            description=NX_CHAR(desc) if desc else None,
+        )
+
+    if pname == "status" and is_status(dt):
+        code_info, text_info = datainfo["members"]
+        return {
+            "status_log": nxlog(
+                column(dt.members[0], [v[0] for v in values], code_info),
+                description,
+            ),
+            "status_text_log": nxlog(
+                column(dt.members[1], [v[1] for v in values], text_info),
+                f"status message: {description}" if description else None,
+            ),
+        }
+    return {f"{pname}_log": nxlog(column(dt, values, datainfo), description)}
+
+
+def _plot(module: str, logname: str, nxlog: NXlog) -> NXdata | None:
+    """NXdata linking to a numeric log's value (signal) and time (axis), so
+    NeXus viewers can plot it; None for non-numeric logs."""
+    value = nxlog.value
+    if not isinstance(value, (NX_FLOAT, NX_INT)):
+        return None
+    quantity = logname.removesuffix("_log")
+    signal = quantity if quantity != "time" else "value"
+    label = f"{module}:{quantity}"
+    # attributes on the log datasets; the soft links in NXdata share them
+    value.attrs["long_name"] = f"{label} ({value.units})" if value.units else label
+    nxlog.time.attrs["long_name"] = "time since start_time (s)"
+    return NXdata(
+        signal=signal,
+        axes="time" if np.ndim(value.value) == 1 else ["time", "."],
+        AXISNAME_indices={"time_indices": 0},
+        DATA={signal: NXreference(nxlog, "value")},
+        AXISNAME={"time": NXreference(nxlog, "time")},
+        title=NX_CHAR(label),
+    )
+
+
+def _module_group(
+    name: str, module: Mapping[str, Any], meaning: Meaning | None
+) -> NXsensor | NXactuator | NXcollection:
+    classes = set(module.get("interface_classes", []))
+    description = NX_CHAR(module["description"]) if module.get("description") else None
+    quantity = NX_CHAR(meaning.quantity) if meaning else None
+    if classes & _ACTUATOR_CLASSES:
+        on_sample = meaning is not None and meaning.belongs_to == "sample"
+        return NXactuator(
+            name=NX_CHAR(name),
+            description=description,
+            physical_quantity=quantity,
+            actuation_target=NX_CHAR(SAMPLE_PATH) if on_sample else None,
+        )
+    if classes & _SENSOR_CLASSES:
+        return NXsensor(
+            name=NX_CHAR(name), description=description, measurement=quantity
+        )
+    group = NXcollection()
+    if description is not None:
+        group.extra_fields["description"] = description
+    return group
+
+
+def _build_sample(
+    links: list[_SampleLink], equipment_id: str, node_description: str | None
+) -> NXsample:
+    sample = NXsample()
+    by_quantity: dict[str, list[_SampleLink]] = {}
+    for link in links:
+        by_quantity.setdefault(link.meaning.quantity, []).append(link)
+
+    for quantity, items in by_quantity.items():
+        env = NXenvironment(
+            name=NX_CHAR(equipment_id),
+            description=NX_CHAR(node_description) if node_description else None,
+        )
+        for item in items:
+            if isinstance(item.group, NXactuator):
+                env.actuators[item.module] = NXreference(item.group)
+            elif isinstance(item.group, NXsensor):
+                env.sensors[item.module] = NXreference(item.group)
+        sample.environments[f"{quantity}_env"] = env
+
+        measuring = [i for i in items if not i.meaning.regulation and i.log]
+        if measuring:
+            best = max(measuring, key=lambda i: i.meaning.importance)
+            sample.extra_groups[f"{quantity}_log"] = NXreference(best.log)
+    return sample
+
+
+def _version() -> str:
+    try:
+        return version("secop-to-nexus")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def build_nexus_tree(
+    describe: Mapping[str, Any] | str | bytes,
+    logs: Logs,
+    *,
+    title: str | None = None,
+) -> NXroot:
+    """Finalized NeXus tree for one SEC node and its recorded parameter logs."""
+    node = _load_describe(describe)
+    equipment_id = node.get("equipment_id") or "sec_node"
+    node_description = node.get("description")
+    modules: Mapping[str, Any] = node.get("modules", {})
+
+    data = {
+        (mname, pname): _normalize(plog)
+        for mname, params in logs.items()
+        for pname, plog in params.items()
+    }
+    for mname, pname in data:
+        if pname not in modules.get(mname, {}).get("accessibles", {}):
+            log.warning("no describe entry for %s:%s, skipping its log", mname, pname)
+    all_ts = [ts for ts, _ in data.values() if len(ts)]
+    t0 = min(float(ts[0]) for ts in all_ts) if all_ts else None
+    t1 = max(float(ts[-1]) for ts in all_ts) if all_ts else None
+
+    instrument = NXinstrument(name=NX_CHAR(equipment_id))
+    instrument.extra_groups["secop_description"] = NXnote(
+        type=NX_CHAR("application/json"),
+        description=NX_CHAR("SECoP describe message of the SEC node"),
+        data=NX_CHAR(json.dumps(node)),
+    )
+
+    sample_links: list[_SampleLink] = []
+    plots: dict[str, NXdata] = {}
+    plot_of_log: dict[int, str] = {}  # id(NXlog) -> name of its NXdata
+    value_plots: list[str] = []
+    for mname, module in modules.items():
+        meaning = Meaning.parse(module.get("meaning"))
+        group = _module_group(mname, module, meaning)
+
+        for pname, accessible in module.get("accessibles", {}).items():
+            if accessible.get("datainfo", {}).get("type") == "command":
+                continue
+            ts, values = data.get((mname, pname), (np.empty(0), []))
+            if not len(ts):
+                continue
+            for logname, nxlog in _parameter_logs(
+                pname, accessible, ts, values, t0
+            ).items():
+                if logname == "value_log" and isinstance(group, NXsensor):
+                    group.value_log = nxlog
+                else:
+                    group.extra_groups[logname] = nxlog
+                plot = _plot(mname, logname, nxlog)
+                if plot is not None:
+                    name = f"{mname}_{logname.removesuffix('_log')}"
+                    if name in _ENTRY_CHILDREN or name in plots:
+                        name += "_data"
+                    plots[name] = plot
+                    plot_of_log[id(nxlog)] = name
+                    if logname == "value_log":
+                        value_plots.append(name)
+            # SECoP 2: a meaning may also sit on a single parameter
+            p_meaning = Meaning.parse(accessible.get("meaning"))
+            if p_meaning and p_meaning.belongs_to == "sample":
+                sample_links.append(
+                    _SampleLink(
+                        p_meaning, mname, group, group.extra_groups.get(f"{pname}_log")
+                    )
+                )
+
+        if meaning and meaning.belongs_to == "sample":
+            value_log = getattr(group, "value_log", None) or group.extra_groups.get(
+                "value_log"
+            )
+            sample_links.append(_SampleLink(meaning, mname, group, value_log))
+
+        if isinstance(group, NXactuator):
+            instrument.actuators[mname] = group
+        elif isinstance(group, NXsensor):
+            instrument.sensors[mname] = group
+        else:
+            instrument.collections[mname] = group
+
+    entry = NXentry(
+        title=NX_CHAR(title or f"SECoP log of {equipment_id}"),
+        start_time=(
+            NX_DATE_TIME(datetime.fromtimestamp(t0, tz=timezone.utc))
+            if t0 is not None
+            else None
+        ),
+        end_time=(
+            NX_DATE_TIME(datetime.fromtimestamp(t1, tz=timezone.utc))
+            if t1 is not None
+            else None
+        ),
+        program_name=NX_CHAR(PROGRAM_NAME, attrs={"version": _version()}),
+        instruments={"instrument": instrument},
+        data=plots,
+    )
+    main_logs: list[NXlog] = []
+    if sample_links:
+        sample = _build_sample(sample_links, equipment_id, node_description)
+        entry.samples["sample"] = sample
+        main_logs = [
+            ref.target
+            for ref in sample.extra_groups.values()
+            if isinstance(ref, NXreference)
+        ]
+    # default plot: the sample's main quantity, else the first module value
+    defaults = [plot_of_log[id(lg)] for lg in main_logs if id(lg) in plot_of_log]
+    defaults += value_plots + list(plots)
+    if defaults:
+        entry.default = defaults[0]
+
+    root = NXroot(
+        default="entry",
+        file_time=datetime.now(timezone.utc).isoformat(),
+        creator=PROGRAM_NAME,
+        creator_version=_version(),
+        NeXus_version=NXDL_VERSION,
+        HDF5_Version=h5py.version.hdf5_version,
+        h5py_version=h5py.version.version,
+        entries={"entry": entry},
+    )
+    root.finalize()
+    return root

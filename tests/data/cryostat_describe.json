@@ -1,0 +1,91 @@
+{
+  "equipment_id": "cryo7.example.org",
+  "description": "test cryostat with VTI and sample stick",
+  "firmware": "frappy 0.20",
+  "modules": {
+    "T_reg": {
+      "description": "VTI temperature regulation",
+      "interface_classes": ["Drivable", "Writable", "Readable"],
+      "meaning": {"function": "temperature_regulation", "importance": 20, "belongs_to": "sample"},
+      "accessibles": {
+        "value": {"description": "regulation temperature", "readonly": true,
+                  "datainfo": {"type": "double", "unit": "K"}},
+        "target": {"description": "setpoint", "readonly": false,
+                   "datainfo": {"type": "double", "unit": "K", "min": 0, "max": 300}},
+        "status": {"description": "current status", "readonly": true,
+                   "datainfo": {"type": "tuple", "members": [
+                     {"type": "enum", "members": {"IDLE": 100, "WARN": 200, "BUSY": 300, "ERROR": 400}},
+                     {"type": "string"}]}},
+        "ramp": {"description": "ramp rate", "readonly": false,
+                 "datainfo": {"type": "scaled", "scale": 0.01, "min": 0, "max": 1000, "unit": "K/min"}},
+        "_heater_on": {"description": "heater switch", "readonly": false,
+                       "datainfo": {"type": "bool"}},
+        "_pid": {"description": "pid settings", "readonly": false,
+                 "datainfo": {"type": "struct", "members": {
+                   "p": {"type": "double"},
+                   "i": {"type": "scaled", "scale": 0.1, "min": 0, "max": 1000}}}},
+        "_limits": {"description": "soft limits", "readonly": false,
+                    "datainfo": {"type": "tuple", "members": [{"type": "double"}, {"type": "double"}]}},
+        "stop": {"description": "stop ramping",
+                 "datainfo": {"type": "command"}}
+      }
+    },
+    "T_sample": {
+      "description": "sample stick thermometer",
+      "interface_classes": ["Readable"],
+      "meaning": {"function": "temperature", "importance": 30, "belongs_to": "sample"},
+      "accessibles": {
+        "value": {"description": "sample temperature", "readonly": true,
+                  "datainfo": {"type": "double", "unit": "K"}},
+        "status": {"description": "current status", "readonly": true,
+                   "datainfo": {"type": "tuple", "members": [
+                     {"type": "enum", "members": {"IDLE": 100, "ERROR": 400}},
+                     {"type": "string"}]}}
+      }
+    },
+    "T_vti": {
+      "description": "VTI thermometer (SECoP 1.x style meaning)",
+      "interface_classes": ["Readable"],
+      "meaning": ["temperature", 20],
+      "accessibles": {
+        "value": {"description": "VTI temperature", "readonly": true,
+                  "datainfo": {"type": "double", "unit": "K"}}
+      }
+    },
+    "field": {
+      "description": "stray field probe, not at the sample",
+      "interface_classes": ["Readable"],
+      "meaning": {"function": "magneticfield", "importance": 10},
+      "accessibles": {
+        "value": {"description": "field", "readonly": true,
+                  "datainfo": {"type": "double", "unit": "T"}}
+      }
+    },
+    "spectrum": {
+      "description": "array valued readable",
+      "interface_classes": ["Readable"],
+      "accessibles": {
+        "value": {"description": "counts", "readonly": true,
+                  "datainfo": {"type": "array", "minlen": 3, "maxlen": 3,
+                               "members": {"type": "int", "min": 0, "max": 1000000}}},
+        "_peaks": {"description": "fitted peaks", "readonly": true,
+                   "datainfo": {"type": "array", "maxlen": 10, "members": {
+                     "type": "struct", "members": {"pos": {"type": "double"}, "height": {"type": "double"}}}}},
+        "_future": {"description": "type unknown to frappy", "readonly": true,
+                    "datainfo": {"type": "matrix", "names": ["x"], "elementtype": "<f8"}}
+      }
+    },
+    "io": {
+      "description": "serial communicator",
+      "interface_classes": ["Communicator"],
+      "accessibles": {
+        "_last_reply": {"description": "last reply", "readonly": true,
+                        "datainfo": {"type": "string"}},
+        "_raw": {"description": "raw bytes", "readonly": true,
+                 "datainfo": {"type": "blob", "maxbytes": 64}},
+        "communicate": {"description": "send and receive",
+                        "datainfo": {"type": "command", "argument": {"type": "string"}, "result": {"type": "string"}}}
+      }
+    }
+  }
+}
