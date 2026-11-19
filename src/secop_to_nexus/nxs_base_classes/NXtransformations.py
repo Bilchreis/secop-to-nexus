@@ -41,7 +41,7 @@ class NXtransformations(NXobject):
 
     The entry point (``depends_on``) will be outside of this class and point to a
     field in here (or to an instance of ``NX_coordinate_system``). Following the
-    chain may also require following ``depends_on``	links to transformations outside,
+    chain may also require following ``depends_on`` links to transformations outside,
     for example to a common base table.  If a relative path is given, it is relative
     to the group enclosing the ``depends_on`` specification.
 

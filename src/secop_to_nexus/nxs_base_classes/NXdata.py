@@ -25,21 +25,21 @@ class NXdata(NXobject):
     can be chosen :ref:`freely <validItemName>`, as indicated by the upper case (this is a common convention in all NeXus classes).
 
     .. note:: ``NXdata`` provides data and coordinates to be plotted but
-        does not describe how the data is to be plotted or even the dimensionality of the plot.
-        https://www.nexusformat.org/NIAC2018Minutes.html#nxdata-plottype--attribute
+            does not describe how the data is to be plotted or even the dimensionality of the plot.
+            https://www.nexusformat.org/NIAC2018Minutes.html#nxdata-plottype--attribute
 
     .. include:: data/index.rst
        :start-line: 1
 
     .. admonition:: Example of a simple curve plot
 
-        .. code-block::
+            .. code-block::
 
-                data:NXdata
-                  @signal = "data"
-                  @axes = ["x"]
-                  data: float[100]
-                  x: float[100]
+                    data:NXdata
+                      @signal = "data"
+                      @axes = ["x"]
+                      data: float[100]
+                      x: float[100]
 
     More complex cases are supported
 
@@ -55,9 +55,9 @@ class NXdata(NXobject):
 
     .. admonition:: Defined by
 
-        * :ref:`DATA </NXdata/DATA-field>` fields
-        * the :ref:`signal </NXdata@signal-attribute>` attribute
-        * the :ref:`auxiliary_signals</NXdata@auxiliary_signals-attribute>` attribute
+            * :ref:`DATA </NXdata/DATA-field>` fields
+            * the :ref:`signal </NXdata@signal-attribute>` attribute
+            * the :ref:`auxiliary_signals</NXdata@auxiliary_signals-attribute>` attribute
 
     The :ref:`DATA </NXdata/DATA-field>` fields contain the signal values to be plotted. The name of the field
     to be used as the *default plot signal* is provided by the :ref:`signal </NXdata@signal-attribute>` attribute.
@@ -66,14 +66,14 @@ class NXdata(NXobject):
 
     .. admonition:: An example with three signals, one of which being the default
 
-        .. code-block::
+            .. code-block::
 
-                data:NXdata
-                  @signal = "data1"
-                  @auxiliary_signals = ["data2", "data3"]
-                  data1: float[10,20,30]  # the default signal
-                  data2: float[10,20,30]
-                  data3: float[10,20,30]
+                    data:NXdata
+                      @signal = "data1"
+                      @auxiliary_signals = ["data2", "data3"]
+                      data1: float[10,20,30]  # the default signal
+                      data2: float[10,20,30]
+                      data3: float[10,20,30]
 
     **Axes:**
 
@@ -82,9 +82,9 @@ class NXdata(NXobject):
 
     .. admonition:: Defined by
 
-        * :ref:`AXISNAME </NXdata/AXISNAME-field>` fields
-        * the :ref:`axes </NXdata@axes-attribute>` attribute
-        * :ref:`AXISNAME_indices </NXdata@AXISNAME_indices-attribute>` attributes
+            * :ref:`AXISNAME </NXdata/AXISNAME-field>` fields
+            * the :ref:`axes </NXdata@axes-attribute>` attribute
+            * :ref:`AXISNAME_indices </NXdata@AXISNAME_indices-attribute>` attributes
 
     The fields and attributes are defined as follows
 
@@ -135,24 +135,24 @@ class NXdata(NXobject):
 
     .. admonition:: The following example covers all axes features supported (see :ref:`sphx_glr_classes_base_classes_data_plot_fscan2d.py`)
 
-        .. code-block::
+            .. code-block::
 
-                data:NXdata
-                  @signal = "data"
-                  @axes = ["x_set", "y_set", "."]  # default axes for all three dimensions
-                  @x_encoder_indices = [0, 1]
-                  @y_encoder_indices = 1           # or [1]
-                  data: float[10,7,1024]
-                  x_encoder: float[11,7]           # coordinates along the first and second dimensions
-                  y_encoder: float[7]              # coordinates along the second dimension
-                  x_set: float[10]                 # default coordinates along the first dimension
-                  y_set: float[7]                  # default coordinates along the second dimension
+                    data:NXdata
+                      @signal = "data"
+                      @axes = ["x_set", "y_set", "."]  # default axes for all three dimensions
+                      @x_encoder_indices = [0, 1]
+                      @y_encoder_indices = 1           # or [1]
+                      data: float[10,7,1024]
+                      x_encoder: float[11,7]           # coordinates along the first and second dimensions
+                      y_encoder: float[7]              # coordinates along the second dimension
+                      x_set: float[10]                 # default coordinates along the first dimension
+                      y_set: float[7]                  # default coordinates along the second dimension
 
     **Uncertainties:**
 
     .. admonition:: Defined by
 
-        * :ref:`FIELDNAME_errors </NXdata/FIELDNAME_errors-field>` fields
+            * :ref:`FIELDNAME_errors </NXdata/FIELDNAME_errors-field>` fields
 
     Standard deviations on data values as well as coordinates can be provided by
     :ref:`FIELDNAME_errors </NXdata/FIELDNAME_errors-field>` fields where ``FIELDNAME`` is the name of a
@@ -160,22 +160,22 @@ class NXdata(NXobject):
 
     .. admonition:: An example of uncertainties on the signal, auxiliary signals and axis coordinates
 
-        .. code-block::
+            .. code-block::
 
-                data:NXdata
-                  @signal = "data1"
-                  @auxiliary_signals = ["data2", "data3"]
-                  @axes = ["x", ".", "z"]
-                  data1: float[10,20,30]
-                  data2: float[10,20,30]
-                  data3: float[10,20,30]
-                  x: float[10]
-                  z: float[30]
-                  data1_errors: float[10,20,30]
-                  data2_errors: float[10,20,30]
-                  data3_errors: float[10,20,30]
-                  x_errors: float[10]
-                  z_errors: float[30]
+                    data:NXdata
+                      @signal = "data1"
+                      @auxiliary_signals = ["data2", "data3"]
+                      @axes = ["x", ".", "z"]
+                      data1: float[10,20,30]
+                      data2: float[10,20,30]
+                      data3: float[10,20,30]
+                      x: float[10]
+                      z: float[30]
+                      data1_errors: float[10,20,30]
+                      data2_errors: float[10,20,30]
+                      data3_errors: float[10,20,30]
+                      x_errors: float[10]
+                      z_errors: float[30]
     """
 
     signal: Optional[str] = dc_field(

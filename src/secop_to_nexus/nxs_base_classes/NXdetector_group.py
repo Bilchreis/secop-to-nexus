@@ -34,14 +34,14 @@ class NXdetector_group(NXobject):
     detector group, DET, consists of four detectors in a
     rectangular array::
 
-                 DTL	DTR
-                 DLL	DLR
+                     DTL    DTR
+                     DLL    DLR
 
     We could have::
 
-        group_names: ["DET", "DTL", "DTR", "DLL", "DLR"]
-        group_index: [1, 2, 3, 4, 5]
-        group_parent:  [-1, 1, 1, 1, 1]
+            group_names: ["DET", "DTL", "DTR", "DLL", "DLR"]
+            group_index: [1, 2, 3, 4, 5]
+            group_parent:  [-1, 1, 1, 1, 1]
     """
 
     group_names: Optional[NX_CHAR] = None

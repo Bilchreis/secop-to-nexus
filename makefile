@@ -4,12 +4,12 @@ SHELL := /bin/bash
 venv:  .venv/touchfile
 
 .venv/touchfile: pyproject.toml
-	uv venv --python 3.11
+	uv venv --python 3.13
 	uv sync --all-groups
 	touch .venv/touchfile
 
 test: venv
-	uv run pytest test/ -v
+	uv run pytest tests/ -v
 
 
 clean:  ## 🧹 Clean up project

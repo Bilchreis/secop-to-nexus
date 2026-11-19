@@ -3,7 +3,7 @@
 import h5py
 import numpy as np
 import pytest
-from libraries.NeXusHDF5 import NexusHDF5Writer, NexusValueInjector
+from nexuscreator.libraries.NeXusHDF5 import NexusHDF5Writer, NexusValueInjector
 
 from secop_to_nexus.nxs_base_classes import (
     NXdata,
