@@ -40,11 +40,15 @@ line-length = 88
 [tool.isort]
 profile = "black"
 line_length = 88
+skip_glob = ["src/secop_to_nexus/_version.py"]
 
 
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools_scm]
+version_file = "src/secop_to_nexus/_version.py"
 
 [tool.pytest.ini_options]
 minversion = "6.0"

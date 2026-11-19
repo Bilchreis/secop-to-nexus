@@ -10,6 +10,7 @@ html/*
 .idea
 
 RELEASE-VERSION
+**/_version.py
 build
 *.egg-info
 
