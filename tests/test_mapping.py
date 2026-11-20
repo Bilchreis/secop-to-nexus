@@ -76,6 +76,8 @@ def test_root_and_entry(nxs):
     assert _str(entry["title"]) == "SECoP log of cryo7.example.org"
     assert _str(entry["start_time"]) == "2025-10-09T08:53:20+00:00"
     assert _str(entry["end_time"]) == "2025-10-09T08:53:22+00:00"
+    assert entry["duration"][()] == 2
+    assert entry["duration"].attrs["units"] == "s"
 
 
 def test_modules_classified_by_interface_class(nxs):
@@ -92,6 +94,7 @@ def test_modules_classified_by_interface_class(nxs):
         "spectrum": "NXsensor",
         "io": "NXcollection",
         "secop_description": "NXnote",
+        "firmware": "NXprogram",
     }
     assert _str(nxs[f"{INST}/name"]) == "cryo7.example.org"
     describe = json.loads(_str(nxs[f"{INST}/secop_description/data"]))
@@ -141,26 +144,164 @@ def test_status_split_into_code_and_text(nxs):
     codes = nxs[f"{INST}/T_reg/status_log/value"]
     assert codes[()].tolist() == [300, 300, 100]
     assert json.loads(codes.attrs["secop_enum"])["BUSY"] == 300
-    texts = nxs[f"{INST}/T_reg/status_text_log/value"]
-    assert _strs(texts) == ["ramping", "ramping", "at target"]
+    # the changing status text is not written: NXlog holds numbers
+    assert "status_text_log" not in nxs[f"{INST}/T_reg"]
+    assert "status_text" not in nxs[f"{INST}/T_reg"]
+
+
+def test_changing_text_dropped_constant_text_kept(tmp_path, cryostat):
+    path = tmp_path / "text.nxs"
+    t = T0 + np.arange(3.0)
+    write_nexus(path, cryostat, {"io": {"_last_reply": (t, ["OK", "ERR", "OK"])}})
+    with h5py.File(path, "r") as f:
+        assert [k for k in f[f"{INST}/io"] if k.startswith("_last_reply")] == []
+    write_nexus(path, cryostat, {"io": {"_last_reply": (t, ["OK", "OK", "OK"])}})
+    with h5py.File(path, "r") as f:
+        assert _str(f[f"{INST}/io/_last_reply"]) == "OK"
+
+
+def test_constant_parameter_becomes_field(tmp_path, cryostat):
+    path = tmp_path / "const.nxs"
+    t = T0 + np.arange(3.0)
+    logs = {
+        "T_reg": {
+            "value": (t, [4.2, 4.2, 4.2]),
+            "target": (t, [4.5, 4.5, 4.6]),
+            "status": (t, 3 * [[100, "at target"]]),
+            "_pid": (t, 3 * [{"p": 2.5, "i": 30}]),
+        },
+        "spectrum": {"value": (t, 3 * [[1, 2, 3]])},
+    }
+    write_nexus(path, cryostat, logs)
+    with h5py.File(path, "r") as f:
+        group = f[f"{INST}/T_reg"]
+        assert group["value"].shape == () and group["value"][()] == 4.2
+        # time of the first recorded value
+        assert group["value"].attrs["timestamp"] == "2025-10-09T08:53:20+00:00"
+        assert "value_log" not in group and "data" not in group
+        assert group["target_log/value"].shape == (3,)
+        assert group["status"][()] == 100
+        assert _str(group["status_text"]) == "at target"
+        assert json.loads(_str(group["_pid"])) == {"p": 2.5, "i": 3.0}
+        np.testing.assert_array_equal(f[f"{INST}/spectrum/value"][()], [1, 2, 3])
+
+
+def test_node_and_module_properties(tmp_path, cryostat):
+    cryostat["implementor"] = "ACME"
+    cryostat["timeout"] = 12.5
+    cryostat["_site"] = {"hall": 3}
+    module = cryostat["modules"]["T_reg"]
+    module["implementation"] = "acme.cryo.Regulation"
+    module["group"] = "vti"
+    module["features"] = []
+    cryostat["modules"]["io"]["implementation"] = "acme.io.Serial"
+    path = tmp_path / "props.nxs"
+    write_nexus(path, cryostat, {})
+    with h5py.File(path, "r") as f:
+        inst = f[INST]
+        assert _str(inst["description"]) == "test cryostat with VTI and sample stick"
+        assert inst["firmware"].attrs["NX_class"] == "NXprogram"
+        assert _str(inst["firmware/program"]) == "frappy 0.20"
+        assert inst["fabrication"].attrs["NX_class"] == "NXfabrication"
+        assert _str(inst["fabrication/vendor"]) == "ACME"
+        # properties without a NeXus field: @secop_<name>
+        assert inst.attrs["secop_timeout"] == 12.5
+        assert json.loads(inst.attrs["secop__site"]) == {"hall": 3}
+        assert "secop_firmware" not in inst.attrs
+        group = inst["T_reg"]
+        assert group["implementation"].attrs["NX_class"] == "NXprogram"
+        assert _str(group["implementation/program"]) == "acme.cryo.Regulation"
+        assert list(group.attrs["secop_interface_classes"]) == [
+            "Drivable",
+            "Writable",
+            "Readable",
+        ]
+        assert group.attrs["secop_group"] == "vti"
+        assert json.loads(group.attrs["secop_meaning"])["importance"] == 20
+        assert "secop_features" not in group.attrs  # empty
+        assert _str(inst["io/implementation/program"]) == "acme.io.Serial"
 
 
 def test_bool_string_blob(nxs):
-    assert nxs[f"{INST}/T_reg/_heater_on_log/value"][()].tolist() == [True]
-    assert _strs(nxs[f"{INST}/io/_last_reply_log/value"]) == ["OK"]
-    assert _strs(nxs[f"{INST}/io/_raw_log/value"]) == ["AAEC"]
+    assert nxs[f"{INST}/T_reg/_heater_on"][()] == np.True_
+    assert _str(nxs[f"{INST}/io/_last_reply"]) == "OK"
+    assert _str(nxs[f"{INST}/io/_raw"]) == "AAEC"
     assert _str(nxs[f"{INST}/io/description"]) == "serial communicator"
 
 
 def test_struct_tuple_and_unknown_types_stored_as_json(nxs):
-    pid = nxs[f"{INST}/T_reg/_pid_log/value"]
+    pid = nxs[f"{INST}/T_reg/_pid"]
     assert pid.attrs["secop_encoding"] == "json"
     # the scaled struct member is converted to its physical value
-    assert json.loads(_strs(pid)[0]) == {"p": 2.5, "i": 3.0}
-    assert json.loads(_strs(nxs[f"{INST}/T_reg/_limits_log/value"])[0]) == [0.0, 300.0]
-    peaks = _strs(nxs[f"{INST}/spectrum/_peaks_log/value"])
-    assert json.loads(peaks[0]) == [{"pos": 1.0, "height": 2.0}]
-    assert json.loads(_strs(nxs[f"{INST}/spectrum/_future_log/value"])[0]) == [1.0, 2.0]
+    assert json.loads(_str(pid)) == {"p": 2.5, "i": 3.0}
+    # a JSON list stays one string, also as a scalar field
+    assert json.loads(_str(nxs[f"{INST}/T_reg/_limits"])) == [0.0, 300.0]
+    peaks = _str(nxs[f"{INST}/spectrum/_peaks"])
+    assert json.loads(peaks) == [{"pos": 1.0, "height": 2.0}]
+    assert json.loads(_str(nxs[f"{INST}/spectrum/_future"])) == [1.0, 2.0]
+
+
+def test_single_value_becomes_field(nxs):
+    group = nxs[f"{INST}/T_reg"]
+    # recorded once: a scalar field, no NXlog
+    assert "target_log" not in group
+    target = group["target"]
+    assert target.shape == () and target[()] == 4.5
+    assert target.attrs["units"] == "K"
+    assert target.attrs["timestamp"] == "2025-10-09T08:53:20+00:00"
+    assert target.attrs["description"] == "setpoint"
+    assert json.loads(target.attrs["secop_datainfo"])["type"] == "double"
+    # recorded several times: still an NXlog, no field
+    assert "value" not in group and "ramp" not in group
+    assert group["value_log"].attrs["NX_class"] == "NXlog"
+    # the value of a sensor, too
+    field = nxs[f"{INST}/field"]
+    assert "value_log" not in field
+    assert field["value"][()] == 0.001
+
+
+def test_single_status_becomes_code_and_text_fields(tmp_path, cryostat):
+    path = tmp_path / "status.nxs"
+    write_nexus(path, cryostat, {"T_reg": {"status": ([T0], [[100, "at target"]])}})
+    with h5py.File(path, "r") as f:
+        group = f[f"{INST}/T_reg"]
+        assert group["status"][()] == 100
+        assert "IDLE" in json.loads(group["status"].attrs["secop_enum"])
+        assert _str(group["status_text"]) == "at target"
+        assert "status_log" not in group and "status_text_log" not in group
+
+
+def test_single_array_value_becomes_1d_field(tmp_path):
+    describe = (DATA / "shall_mass_spec_describe.json").read_text()
+    path = tmp_path / "array.nxs"
+    write_nexus(path, describe, {"mass_spec": {"value": ([T0], [[1e-9, 2e-9]])}})
+    with h5py.File(path, "r") as f:
+        np.testing.assert_allclose(f[f"{INST}/mass_spec/value"][()], [1e-9, 2e-9])
+
+
+def test_field_never_shadows_a_nexus_name(tmp_path, cryostat):
+    # a parameter called like a NeXus field of the group keeps its log
+    cryostat["modules"]["T_reg"]["accessibles"]["name"] = {
+        "description": "custom",
+        "datainfo": {"type": "double"},
+        "readonly": True,
+    }
+    path = tmp_path / "clash.nxs"
+    write_nexus(path, cryostat, {"T_reg": {"name": ([T0], [1.5])}})
+    with h5py.File(path, "r") as f:
+        assert _str(f[f"{INST}/T_reg/name"]) == "T_reg"
+        assert f[f"{INST}/T_reg/name_log/value"][()].tolist() == [1.5]
+
+
+def test_sample_links_field_of_single_value(tmp_path, cryostat):
+    path = tmp_path / "single.nxs"
+    write_nexus(path, cryostat, {"T_sample": {"value": ([T0], [3.8])}})
+    with h5py.File(path, "r") as f:
+        sample = f["entry/sample"]
+        assert "temperature_log" not in sample
+        link = sample.get("temperature", getlink=True)
+        assert link.path == "/entry/instrument/T_sample/value"
+        assert sample["temperature"][()] == 3.8
 
 
 def test_numeric_array_is_2d(nxs):
@@ -213,7 +354,10 @@ def test_shall_node_ragged_arrays_fall_back_to_json(tmp_path):
         "mass_spec": {
             "value": ParameterLog([T0, T0 + 1], [[1e-9, 2e-9], [3e-9, 4e-9]]),
             "_mass": ParameterLog([T0, T0 + 1], [[1.0, 2.0], [3.0, 4.0, 5.0]]),
-            "_mid_descriptor": ParameterLog([T0], [{"device": [1.0], "mass": [28.0]}]),
+            "_mid_descriptor": ParameterLog(
+                [T0, T0 + 1],
+                [{"device": [1.0], "mass": [28.0]}, {"device": [2.0], "mass": [28.0]}],
+            ),
         }
     }
     path = tmp_path / "shall.nxs"
@@ -269,9 +413,9 @@ def _nxdata(f) -> list[str]:
 
 
 def test_one_nxdata_per_module_with_numeric_value(nxs):
-    # nothing at entry level; io has no value
+    # nothing at entry level; io has no value, field only a single one
     assert _nxdata(nxs) == [
-        f"{INST}/{m}/data" for m in ("T_reg", "T_sample", "T_vti", "field", "spectrum")
+        f"{INST}/{m}/data" for m in ("T_reg", "T_sample", "T_vti", "spectrum")
     ]
 
 
@@ -314,7 +458,7 @@ def test_default_plot_without_sample(tmp_path):
     logs = {
         "mass_spec": {
             "_emission": ([T0], [1.0]),
-            "value": ([T0], [[1.0, 2.0]]),
+            "value": ([T0, T0 + 1], [[1.0, 2.0], [3.0, 4.0]]),
         }
     }
     path = tmp_path / "shall.nxs"

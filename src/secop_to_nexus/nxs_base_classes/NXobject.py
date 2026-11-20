@@ -29,6 +29,10 @@ class NXobject:
     extra_fields: dict[str, NXdtype] = field(default_factory=dict)
     # arbitrary additional child groups, key is the HDF5 group name
     extra_groups: dict[str, NXobject] = field(default_factory=dict)
+    # arbitrary additional group attributes, key is the attribute name
+    extra_attrs: dict[str, Any] = field(
+        default_factory=dict, metadata={"kind": "attribute"}
+    )
 
     parent: Optional[NXobject] = field(default=None, init=False, repr=False)
     _name: Optional[str] = field(default=None, init=False, repr=False)
