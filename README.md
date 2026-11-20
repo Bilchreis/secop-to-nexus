@@ -30,15 +30,17 @@ data = nexus_bytes(describe_message, logs)         # same, returned as bytes
 One SEC node per file:
 
 ```
-/entry                        NXentry       title, start_time, end_time
-/entry/instrument             NXinstrument  name = equipment_id
+/entry                        NXentry       title, start_time, end_time, duration
+/entry/instrument             NXinstrument  name = equipment_id, description
+    firmware                  NXprogram     node firmware
     secop_description         NXnote        raw describe message (JSON)
     <module>                  NXsensor      Readable
                               NXactuator    Writable / Drivable
                               NXcollection  anything else (e.g. Communicator)
-        <param>_log           NXlog         one per recorded parameter
+        <param>_log           NXlog         one per parameter that changed
         status_log            NXlog         status code (enum members in @secop_enum)
-        status_text_log       NXlog         status message
+        <param>, status, ...  field         instead of the NXlog, if the value never changed
+        implementation        NXprogram     module implementation
         data                  NXdata        plot of value over time
 /entry/sample                 NXsample      only if a module's meaning belongs to the sample
     <quantity>_env            NXenvironment links to the sensors/actuators
@@ -53,6 +55,35 @@ plotted: they have their own timestamps and are never resampled. Array values pl
 sample's main quantity, e.g. the highest-importance `temperature` module, and
 otherwise the first module with a plot, so viewers such as h5web or NeXpy open
 a useful plot directly.
+
+Only parameters that change over time become an `NXlog`. A parameter whose
+recorded value never changed (including one recorded only once) is written as a
+plain field named like the parameter (`target`, `_gastype`, `status` and
+`status_text`). The field keeps the units and the `@secop_*` attributes and
+carries the time the value was first recorded in `@timestamp` (ISO 8601) and
+the parameter description in `@description`. A parameter named like a field
+NeXus already defines for the group (e.g. `name`, `type`) keeps its `NXlog`. A
+module whose `value` is such a field gets no plot, and the sample then links
+the field as `<quantity>` instead of `<quantity>_log`.
+
+String and blob parameters that do change (typically the status text) are not
+written at all, because `NXlog` is defined for numbers. Structured values
+stored as JSON are kept.
+
+Node and module properties go to the matching NeXus fields:
+
+| SECoP property | NeXus |
+|---|---|
+| node `equipment_id` | `instrument/name` |
+| node `description` | `instrument/description` |
+| node `firmware` | `instrument/firmware` (`NXprogram/program`) |
+| node `implementor` | `instrument/fabrication` (`NXfabrication/vendor`) |
+| module `description` | `<module>/description` |
+| module `implementation` | `<module>/implementation` (`NXprogram/program`) |
+| module `meaning.function` | `NXsensor/measurement`, `NXactuator/physical_quantity` |
+| anything else (`interface_classes`, `group`, `features`, `meaning`, `timeout`, custom `_...`) | `@secop_<property>` attribute of the instrument / module group; non-trivial values as JSON |
+
+`NXentry/duration` is the time between the first and the last recorded value.
 
 `meaning.function` fills `NXsensor/measurement` and
 `NXactuator/physical_quantity`, using the NeXus spelling (`magneticfield` becomes

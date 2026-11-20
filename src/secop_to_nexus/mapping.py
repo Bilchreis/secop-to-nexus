@@ -3,23 +3,37 @@
 Layout (one SEC node per file)::
 
     /                                  NXroot
-    /entry                             NXentry   title, start_time, end_time
+    /entry                             NXentry   title, start_time, end_time,
+                                                 duration
     /entry/instrument                  NXinstrument  name = equipment_id
+        description                    node description
+        firmware                       NXprogram, program = node firmware
+        fabrication                    NXfabrication, vendor = node implementor
         secop_description              NXnote   raw describe message (JSON)
         <module>                       NXsensor (Readable)
                                        NXactuator (Writable, Drivable)
                                        NXcollection (anything else)
             value_log, target_log, <param>_log          NXlog per parameter
             status_log, status_text_log                 NXlog (code, message)
+            value, target, <param>, status, status_text
+                                       plain field instead of the NXlog if the
+                                       parameter never changed its value
+            implementation             NXprogram, program = implementation
     /entry/sample                      NXsample  only if a meaning belongs to it
         <quantity>_env                 NXenvironment, links to the modules
         <quantity>_log                 link to the most important measuring log
+        <quantity>                     link to its field, if it never changed
 
 Each module with a numeric ``value`` gets one NXdata group ``data`` next to
 its logs: ``value`` and ``time`` are links into ``value_log``, nothing is
 copied or resampled. The ``@default``
 chain root -> entry -> instrument -> module -> data leads to the sample's main
 quantity, else to the first module that has a plot.
+
+Only parameters that change over time become an NXlog. Changing string and
+blob parameters (e.g. the status text) are not written at all: NXlog holds
+numbers. Node and module properties without a NeXus field of their own are
+kept as ``@secop_<property>`` attributes of the instrument / module group.
 
 Modules are classified by their interface classes; ``meaning.function``
 fills ``NXsensor/measurement`` and ``NXactuator/physical_quantity``.
@@ -30,6 +44,7 @@ list-style meanings (``[function, importance]``, SECoP 1.x) predate
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -49,10 +64,12 @@ from secop_to_nexus.nxs_base_classes import (
     NXdata,
     NXentry,
     NXenvironment,
+    NXfabrication,
     NXinstrument,
     NXlog,
     NXnote,
     NXobject,
+    NXprogram,
     NXroot,
     NXsample,
     NXsensor,
@@ -62,6 +79,7 @@ from secop_to_nexus.nxs_base_classes.NXdtypes import (
     NX_DATE_TIME,
     NX_FLOAT,
     NX_INT,
+    NXdtype,
 )
 from secop_to_nexus.nxs_base_classes.NXreference import NXreference
 
@@ -136,6 +154,7 @@ class _SampleLink:
     module: str
     group: NXobject
     log: NXlog | None
+    field: str | None = None  # name of the field in group, if there is no log
 
 
 def _load_describe(describe: Mapping[str, Any] | str | bytes) -> dict[str, Any]:
@@ -200,6 +219,59 @@ def _parameter_logs(
     return {f"{pname}_log": nxlog(column(dt, values, datainfo), description)}
 
 
+def _field(nxlog: NXlog, timestamp: float) -> NXdtype:
+    """Plain field for a parameter that never changed: the value of ``nxlog``
+    with the time it was first recorded and its description as attributes."""
+    column = nxlog.value
+    value = column.value[0]
+    attrs = dict(column.attrs, timestamp=_iso(timestamp))
+    if nxlog.description is not None:
+        attrs["description"] = nxlog.description.value
+    if isinstance(column, NX_CHAR):
+        # wrapped in a list: the writer would parse a bare "[...]" string
+        return NX_CHAR([value], units=column.units, attrs=attrs, array=False)
+    return type(column)(
+        value, units=column.units, attrs=attrs, array=np.ndim(value) > 0
+    )
+
+
+def _constant(column: NXdtype) -> bool:
+    """True if all recorded values of ``column`` are the same."""
+    values = column.value
+    if isinstance(values, np.ndarray):
+        first = np.broadcast_to(values[0], values.shape)
+        return np.array_equal(values, first, equal_nan=values.dtype.kind == "f")
+    return all(v == values[0] for v in values)
+
+
+def _is_text(column: NXdtype) -> bool:
+    """SECoP string or blob (JSON-encoded structured values are not text)."""
+    return isinstance(column, NX_CHAR) and "secop_encoding" not in column.attrs
+
+
+def _secop_attrs(properties: Mapping[str, Any], mapped: set[str]) -> dict[str, Any]:
+    """``@secop_<name>`` attributes for the node/module properties that have
+    no NeXus field: strings, numbers and lists of strings as they are,
+    anything else as JSON."""
+    attrs: dict[str, Any] = {}
+    for name, value in properties.items():
+        if name in mapped or value is None or value == [] or value == "":
+            continue
+        plain = isinstance(value, (str, int, float)) or (
+            isinstance(value, list) and all(isinstance(v, str) for v in value)
+        )
+        attrs[f"secop_{name}"] = value if plain else json.dumps(value)
+    return attrs
+
+
+def _field_names(group: NXobject) -> set[str]:
+    """Names a parameter field must not take in ``group``: the fields and
+    groups NeXus defines for its class (``value`` is the exception, it means
+    the same thing there) and the plot."""
+    names = {f.metadata.get("nx_name", f.name) for f in dataclasses.fields(group)}
+    return (names - {"value"}) | {PLOT_NAME}
+
+
 def _plot(module: str, value_log: NXlog | None) -> NXdata | None:
     """NXdata of a module: its value over time, as links into value_log;
     None if the value is not numeric."""
@@ -244,6 +316,19 @@ def _module_group(
     return group
 
 
+def _module_properties(group: NXobject, module: Mapping[str, Any]) -> None:
+    """Module properties that are not covered by _module_group."""
+    if module.get("implementation"):
+        program = NXprogram(program=NX_CHAR(str(module["implementation"])))
+        if isinstance(group, NXcollection):
+            group.extra_groups["implementation"] = program
+        else:
+            group.programs["implementation"] = program
+    group.extra_attrs.update(
+        _secop_attrs(module, {"accessibles", "description", "implementation"})
+    )
+
+
 def _build_sample(
     links: list[_SampleLink], equipment_id: str, node_description: str | None
 ) -> NXsample:
@@ -264,10 +349,15 @@ def _build_sample(
                 env.sensors[item.module] = NXreference(item.group)
         sample.environments[f"{quantity}_env"] = env
 
-        measuring = [i for i in items if not i.meaning.regulation and i.log]
+        measuring = [
+            i for i in items if not i.meaning.regulation and (i.log or i.field)
+        ]
         if measuring:
             best = max(measuring, key=lambda i: i.meaning.importance)
-            sample.extra_groups[f"{quantity}_log"] = NXreference(best.log)
+            if best.log is not None:
+                sample.extra_groups[f"{quantity}_log"] = NXreference(best.log)
+            else:
+                sample.extra_fields[quantity] = NXreference(best.group, best.field)
     return sample
 
 
@@ -303,6 +393,22 @@ def build_nexus_tree(
     t1 = max(float(ts[-1]) for ts in all_ts) if all_ts else None
 
     instrument = NXinstrument(name=NX_CHAR(equipment_id))
+    if node_description:
+        instrument.extra_fields["description"] = NX_CHAR(node_description)
+    if node.get("firmware"):
+        instrument.extra_groups["firmware"] = NXprogram(
+            program=NX_CHAR(str(node["firmware"]))
+        )
+    if node.get("implementor"):
+        instrument.fabrications["fabrication"] = NXfabrication(
+            vendor=NX_CHAR(str(node["implementor"]))
+        )
+    instrument.extra_attrs.update(
+        _secop_attrs(
+            node,
+            {"modules", "equipment_id", "description", "firmware", "implementor"},
+        )
+    )
     instrument.extra_groups["secop_description"] = NXnote(
         type=NX_CHAR("application/json"),
         description=NX_CHAR("SECoP describe message of the SEC node"),
@@ -314,7 +420,9 @@ def build_nexus_tree(
     for mname, module in modules.items():
         meaning = Meaning.parse(module.get("meaning"))
         group = _module_group(mname, module, meaning)
+        _module_properties(group, module)
 
+        reserved = _field_names(group)
         for pname, accessible in module.get("accessibles", {}).items():
             if accessible.get("datainfo", {}).get("type") == "command":
                 continue
@@ -324,7 +432,12 @@ def build_nexus_tree(
             for logname, nxlog in _parameter_logs(
                 pname, accessible, ts, values, t0
             ).items():
-                if logname == "value_log" and isinstance(group, NXsensor):
+                name = logname.removesuffix("_log")
+                if name not in reserved and _constant(nxlog.value):
+                    group.extra_fields[name] = _field(nxlog, float(ts[0]))
+                elif _is_text(nxlog.value):
+                    continue  # NXlog holds numbers: no log of changing text
+                elif logname == "value_log" and isinstance(group, NXsensor):
                     group.value_log = nxlog
                 else:
                     group.extra_groups[logname] = nxlog
@@ -333,7 +446,11 @@ def build_nexus_tree(
             if p_meaning and p_meaning.belongs_to == "sample":
                 sample_links.append(
                     _SampleLink(
-                        p_meaning, mname, group, group.extra_groups.get(f"{pname}_log")
+                        p_meaning,
+                        mname,
+                        group,
+                        group.extra_groups.get(f"{pname}_log"),
+                        pname if pname in group.extra_fields else None,
                     )
                 )
 
@@ -346,7 +463,15 @@ def build_nexus_tree(
             group.default = PLOT_NAME
             plotted.append(mname)
         if meaning and meaning.belongs_to == "sample":
-            sample_links.append(_SampleLink(meaning, mname, group, value_log))
+            sample_links.append(
+                _SampleLink(
+                    meaning,
+                    mname,
+                    group,
+                    value_log,
+                    "value" if "value" in group.extra_fields else None,
+                )
+            )
 
         if isinstance(group, NXactuator):
             instrument.actuators[mname] = group
@@ -367,6 +492,7 @@ def build_nexus_tree(
             if t1 is not None
             else None
         ),
+        duration=NX_INT(round(t1 - t0), units="s") if t0 is not None else None,
         program_name=NX_CHAR(PROGRAM_NAME, attrs={"version": _version()}),
         instruments={"instrument": instrument},
     )
